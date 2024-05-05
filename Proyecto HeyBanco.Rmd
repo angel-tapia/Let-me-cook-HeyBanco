@@ -1,0 +1,475 @@
+---
+title: "Análisis de Datos"
+author: "Alondra Ixchel Huerta Treviño A01571130"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Librerías
+```{r}
+library(rjson)
+
+library(httr)
+
+library(jsonlite)
+
+library(rvest)
+
+library(tm)
+
+library(udpipe)
+
+library(slam)
+
+library(wordcloud)
+
+library(RColorBrewer)
+
+library(topicmodels)
+
+library(dplyr)
+
+library(ggplot2)
+
+library(sentimentr)
+
+library(tidytext)  
+
+library(sentimentr)
+
+library(textdata)
+
+library(syuzhet)
+
+library(slam)
+
+library(lubridate)
+
+library(stopwords)
+
+library(tidyr)
+```
+
+
+## Cargar datos por fuente
+```{r}
+# Cargar archivo de json Youtube
+json_data <- readLines("/Users/angel/Desktop/Angel/Datathon2024/Youtube.json")
+json_list <- jsonlite::fromJSON(json_data)
+youtubeDf <- as.data.frame(json_list)
+
+heyBancoDf <- read.csv("/Users/angel/Desktop/Angel/Datathon2024/HeyBanco.csv")
+```
+
+## Eliminara los NA
+```{r}
+
+# Quitar filas que tienen "" o son NA
+youtubeDf <- subset(youtubeDf, contenido != "" & !is.na(contenido))
+
+heyBancoDf <- subset(heyBancoDf, tweet != "" & !is.na(tweet))
+
+```
+
+## Filtro por año
+```{r}
+# Función para separarlo por año
+filter_from_2023_to_today <- function(df, banco) {
+  
+  # Convert PublishedAt to Date type
+  df$date <- as.Date(df$date, format = "%Y-%m-%d")
+  
+  # Extract the year
+  df$Year <- format(df$date, "%Y")
+  
+  # Get the current year
+  current_year <- format(Sys.Date(), "%Y")
+  
+  # Filter the data with years greater than or equal to 2023
+  df <- df[df$Year >= "2023", ]
+  
+  # Filter the data with bank
+  df_filtered <- df[df$Bank == banco, ]
+  
+  # Return the filtered dataframe
+  return(df_filtered)
+}
+
+```
+
+
+## Cada df de fuente, filtrar por año
+```{r}
+  # Youtube dataframes
+  youtubeDf <- filter_from_2023_to_today(youtubeDf, "heybanco")
+  
+  
+```
+
+## Poner un límite a la información
+```{r}
+  # Define the row limit
+  ROW_LIMIT <- 1000
+  
+  youtube2019 <- youtube2019[1:min(nrow(youtube2019), ROW_LIMIT), ]
+  gobierno2019 <- gobierno2019[1:min(nrow(gobierno2019), ROW_LIMIT), ]
+  noticias2019 <- noticias2019[1:min(nrow(noticias2019), ROW_LIMIT), ]
+  
+
+```
+
+## Análisis general por año
+```{r}
+# First merge df1 and df2
+merged2023 <- rbind(noticias2023, youtube2023, gobierno2023)
+merged2022 <- rbind(noticias2022, youtube2022, gobierno2022)
+
+```
+
+## Eliminar palabras
+```{r}
+  palabras_eliminar <- c("gracias", "tarjeta", "banco", "cuenta", "solo", "omar", "hola", "hacer", "puedo", "saludos", "muchas", "cada", "bien")
+
+```
+
+## Función de limpieza de texto
+```{r}
+limpiar_texto <- function(texto, palabras_eliminar = NULL){
+    
+    # Cambiar texto a minusculas
+    texto <- tolower(texto) 
+    
+    # Elimina las stopwords en español
+    texto <- removeWords(texto, stopwords("es"))
+    
+    # Elimina palabras especificadas por el usuario
+    if (!is.null(palabras_eliminar)) {
+      texto <- removeWords(texto, palabras_eliminar)
+    }
+    
+    # Eliminar palabras cortas:
+    texto <- gsub("\\b\\w{1,3}\\b", "", texto)
+    
+    # Eliminar caracteres no ASCII
+    texto <- iconv(texto, "latin1", "ASCII", sub="")
+    
+    # Elimina URLs
+    texto <- gsub("http\\S+|www\\.\\S+","",texto)
+    
+    # Elimina puntuacion y simbolos
+    texto <- gsub("<.*?>","",texto)
+    
+    # Reemplazar puntuacion con espacios
+    texto <- gsub("[[:punct:]]"," ",texto) 
+    
+    # Elimina los digitos
+    texto <- gsub("\\d+","",texto)
+    
+    # Reemplazar doble espacio con un solo espacio
+    texto <- gsub("\\s+"," ",texto)
+    
+    # La siguiente cadena elimina el nombre de los participantes de la conferencia antes de que estos hablen, es decir elimina los " presidente : ", que no sirven de mucho para el analisis.
+    texto <- gsub("^\\W+:", "", texto)
+    
+    return(texto)
+  }
+
+
+```
+
+
+## Aplicar función de limpieza de texto a cada df
+```{r}
+
+
+youtubeDf$Content <- sapply(youtubeDf$Content, limpiar_texto, palabras_eliminar)
+
+heyBancoDf$tweet <- sapply(heyBancoDf$tweet, limpiar_texto, palabras_eliminar)
+
+
+```
+
+
+## Función crear corpus
+```{r}
+# Function to create a corpus
+crear_corpus <- function(df, palabras_eliminar) {
+  # Create a corpus from the Content column
+  corpus <- Corpus(VectorSource(df$Content))
+  
+  # Remove specific words
+  corpus <- tm_map(corpus, removeWords, palabras_eliminar)
+  
+  # Remove empty documents
+  corpus <- tm_filter(corpus, function(x) length(unlist(strsplit(as.character(x), " "))) > 0)
+    
+  return(corpus)
+}
+
+```
+
+## Corpus
+```{r}
+
+# Merged Corpus
+youtubedf.corpus <- crear_corpus(youtubeDf, palabras_eliminar)
+
+heybancodf.corpus <- crear_corpus(heyBancoDf, palabras_eliminar)
+
+```
+
+## Función nube de palabras
+```{r}
+# Function to create a word cloud from a given corpus
+crear_wordcloud <- function(corpus) {
+  # Create the Document-Term Matrix
+  dtm <- DocumentTermMatrix(corpus)
+  
+  # Calculate term frequency
+  term_frequency <- colSums(as.matrix(dtm))
+  term_frequency_sorted <- sort(term_frequency, decreasing = TRUE)
+  
+  # Identify and list the 25 most frequent terms in the dataset
+  top_25_terms <- subset(term_frequency_sorted, term_frequency_sorted >= 50)
+  top_25_terms <- head(top_25_terms, 25)
+  
+  print(top_25_terms)
+  
+  # Select the 150 most frequent words
+  top_150_terms <- head(term_frequency_sorted, 150)
+  
+  # Create the word cloud
+  wordcloud(names(top_150_terms), freq = top_150_terms, min.freq = 1,
+            max.words=150, random.order=FALSE, rot.per=0.35, 
+            colors=brewer.pal(8, "Dark2"))
+}
+
+```
+
+## Creación de nube de palabras
+```{r}
+# Generate word cloud for each year
+crear_wordcloud(youtubedf.corpus)
+
+crear_wordcloud(youtubedf.corpus)
+
+```
+
+## Función Barplot
+```{r}
+# Function to create a bar plot from a given corpus
+crear_barplot <- function(corpus, main_title = "Términos más frecuentes", color_palette = "Dark2", threshold = 50, top_terms = 25) {
+  # Create the Document-Term Matrix
+  dtm <- DocumentTermMatrix(corpus)
+  
+  # Calculate term frequency
+  term_frequency <- colSums(as.matrix(dtm))
+  term_frequency_sorted <- sort(term_frequency, decreasing = TRUE)
+  
+  # Identify and list the top terms based on the specified threshold
+  top_terms_vector <- subset(term_frequency_sorted, term_frequency_sorted >= threshold)
+  top_terms_vector <- head(top_terms_vector, top_terms)
+  
+  # Create a bar plot
+  barplot(top_terms_vector, main = main_title, col = brewer.pal(8, color_palette),
+          las = 2, cex.names = 0.8)
+}
+
+```
+
+## Barplot por año
+```{r}
+# Create bar plots for the years 2023 to 2019
+crear_barplot(youtubedf.corpus, main_title = "Términos más frecuentes relacionados a heyBanco", color_palette = "Dark2", threshold = 30, top_terms = 25)
+
+```
+
+
+## Función análisis de sentimientos
+```{r}
+# Function for sentiment analysis
+sentiment_analysis <- function(df, source) {
+  df$date = lubridate::ymd_hms(df$date)
+  
+  # Tokenization
+  tidy_df <- df %>%
+    unnest_tokens("word", Content)
+  
+  # Stopword removal
+  spanish_stop_words <- tm::stopwords("spanish")
+  spanish_stop_words <- data.frame(word = spanish_stop_words, stringsAsFactors = FALSE)
+  tidy_df <- tidy_df %>%
+    anti_join(spanish_stop_words, by = "word")
+  
+  # Sentiment analysis
+  bing_word_sentiments <- get_sentiments("bing")
+  df_sentiment <- tidy_df %>%
+    inner_join(bing_word_sentiments) %>%
+    count(date, sentiment) %>%
+    spread(sentiment, n, fill = 0)
+  
+  # Plot sentiment over time
+  ggplot(df_sentiment, aes(x = date)) +
+    geom_line(aes(y = positive), color = "blue") +
+    geom_line(aes(y = -negative), color = "red") +
+    labs(x = "date", y = "Sentiment",
+         title = source,
+         color = "Sentiment") +
+    scale_color_manual(values = c("Positive" = "blue", "Negative" = "red")) +
+    theme_minimal()
+}
+
+```
+
+## Análisis de sentimientos
+```{r}
+# Use the function on your DataFrame
+sentiment_analysis(youtubeDf, "Youtube")
+
+```
+
+## Función para análisis de sentimientos 2
+```{r}
+sentiment_analysis_2 <- function(df) {
+  df$date = lubridate::ymd_hms(df$date)
+  
+  # Tokenization
+  tidy_df <- df %>%
+    unnest_tokens("word", Content)
+  
+  # Stopword removal
+  spanish_stop_words <- tm::stopwords("spanish")
+  spanish_stop_words <- data.frame(word = spanish_stop_words, stringsAsFactors = FALSE)
+  tidy_df <- tidy_df %>%
+    anti_join(spanish_stop_words, by = "word")
+  
+  # Sentiment analysis
+  nrc_word_sentiments <- get_sentiments("nrc")
+  tidy_sentiment <- tidy_df %>%
+    inner_join(nrc_word_sentiments)
+  
+  # Get the total counts of each sentiment
+  total_sentiments <- tidy_sentiment %>%
+    group_by(sentiment) %>%
+    summarise(count = n())
+  
+  # Get the most common words for each sentiment
+  common_words <- tidy_sentiment %>%
+    count(word, sentiment, sort = TRUE) %>%
+    group_by(sentiment) %>%
+    top_n(10, n)
+  
+  return(list(total_sentiments = total_sentiments, common_words = common_words))
+}
+
+```
+
+## Función Recuentos totales de sentimientos
+```{r}
+recuento_sentimientos <- function(df, titulo) {
+  # Obtener los resultados del análisis de sentimientos
+  resultados <- sentiment_analysis_2(df)
+  
+  # Definir los colores para cada emoción
+  colores_emociones <- c("joy" = "#CCCC00",  # Un tono más oscuro de amarillo
+                       "sadness" = "#0000CC",  # Un tono más oscuro de azul
+                       "anger" = "#CC0000",  # Un tono más oscuro de rojo
+                       "fear" = "#000000",  # Negro es el color más oscuro posible
+                       "surprise" = "#CC7A00",  # Un tono más oscuro de naranja
+                       "trust" = "#009900",  # Un tono más oscuro de verde
+                       "disgust" = "#660099",  # Un tono más oscuro de morado
+                       "anticipation" = "#FF1493",  # Un tono más oscuro de rosa
+                       "positive" = "#1E90FF",  # Un tono más oscuro de azul claro
+                       "negative" = "#8B0000")  # Un tono más oscuro de rojo oscuro
+
+  
+  # Crear el gráfico de barras
+  ggplot(resultados$total_sentiments, aes(x = sentiment, y = count, fill = sentiment)) +
+    geom_bar(stat = "identity") +
+    scale_fill_manual(values = colores_emociones) +
+    theme_minimal() +
+    labs(x = "Sentimiento", y = "Recuento", title = titulo)
+}
+
+```
+
+## Recuentos totales de sentimientos
+```{r}
+# Youtube
+recuento_sentimientos(youtubeDf, titulo = "Análisis de sentimientos de YouTube")
+
+
+```
+
+
+## Función de tematización
+```{r}
+tematizacion <- function(df, title) {
+  # Preprocesar el texto
+  transcription <- tolower(df$Content)
+  transcription <- removePunctuation(transcription)
+  transcription <- removeWords(transcription, stopwords("spanish"))
+  
+  # Convertir el texto en un Corpus
+  corpus <- Corpus(VectorSource(transcription))
+  
+  # Convertir el texto en un DocumentTermMatrix
+  dtm <- DocumentTermMatrix(corpus)
+  
+  # Eliminar filas vacías de dtm
+  dtm <- dtm[row_sums(dtm) > 0, ]
+
+  # Generar un modelo de topic models
+  lda <- LDA(dtm, k = 5)
+  
+  # Obtener los términos más importantes en general
+  terms <- tidy(lda, matrix = "beta") %>%
+    group_by(topic) %>%
+    slice_max(order_by = beta, n = 15) %>%
+    ungroup() %>%
+    slice_max(order_by = beta, n = 15)
+
+  # Convertir 'topic' en un factor
+  terms$topic <- as.factor(terms$topic)
+
+  # Generar el gráfico
+  ggplot(terms, aes(x = term, y = beta, fill = topic)) +
+    geom_col(show.legend = FALSE) +
+    coord_flip() +
+    facet_wrap(~topic, ncol = 3) +
+    scale_fill_manual(values = c("#DAA520", "#9B30FF", "#FF4500", "#4C9900", "#00CED1")) +  # Ajusta los colores según sea necesario
+    ggtitle(title)  # Agrega el título al gráfico
+}
+
+```
+
+## Tematización
+```{r}
+tematizacion(youtubeDf, "Tematización Youtube")
+tematizacion(gobiernoDf, "Tematización Gobierno")
+tematizacion(noticiasDf, "Tematización Noticias")
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
