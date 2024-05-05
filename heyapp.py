@@ -6,6 +6,9 @@ import pandas as pd
 from datetime import datetime
 import openai
 
+import plotly.express as px
+from datetime import datetime
+
 
 
 def procesar_fecha(fecha):
@@ -14,9 +17,6 @@ def procesar_fecha(fecha):
 
 # Título de la aplicación
 st.title('Hey Radar')
-
-# Selector de fecha en la interfaz
-fecha_usuario = st.date_input("Elige una fecha:")
 
 
 with open("grouped_data.json", "r") as f:
@@ -46,7 +46,7 @@ def get_data_by_year_and_week(json_array, entrada):
 
 def promptApi(prompt):
   # Set up your OpenAI API key
-  #api_key = "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"
+  api_key = "KEEEEEEEYYYYYY"
 
   # Initialize the OpenAI client
   client = openai.OpenAI(api_key=api_key)
@@ -61,6 +61,42 @@ def promptApi(prompt):
   response = chat_completion.choices[0].message.content
 
   return response
+
+
+negativity_scores = {}
+
+for entry in data:
+    if '-' in entry["date"]:
+        date_format = "%Y-%m-%d"
+    else:
+        date_format = "%Y-%W-%w"
+    date = datetime.strptime(entry["date"], date_format)
+    
+    negativity = entry["sentiment"]["neg"]
+    #positivity = entry["sentiment"]["pos"]
+
+    if date not in negativity_scores:
+        negativity_scores[date] = []
+    negativity_scores[date].append(negativity)
+
+neg_df = pd.DataFrame.from_dict(negativity_scores, orient='index', columns=['negativity'])
+
+
+
+fig = px.line(neg_df, x=neg_df.index, y=['negativity'], title='Sentiment Analysis Time Series')
+st.plotly_chart(fig)
+
+
+
+fecha_usuario = st.date_input("Select a date", min_value=min(neg_df.index), max_value=max(neg_df.index))
+
+
+if fecha_usuario in neg_df.index:
+    selected_scores = neg_df.loc[fecha_usuario]
+    st.write("Negativity Score:", selected_scores['negativity'])
+else:
+    st.write("No data available for selected date.")
+
 # Botón para procesar la fecha
 if st.button('Realizar analisis'):
     resultado = get_data_by_year_and_week(data, fecha_usuario)
@@ -78,4 +114,4 @@ if st.button('Realizar analisis'):
     Utiliza esta informacion que es respecto a la fecha {fecha_usuario} para responder. 
     La data es: {resultado}
     """
-    st.write(promptApi(prompt))  # Mostrar el resultado procesado
+    st.write(promptApi(prompt))  # Mostrar el resultado procesado``
